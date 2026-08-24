@@ -46,6 +46,7 @@
             <select id="render-mode" class="bg-zinc-700 text-white rounded p-1 border border-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
                 <option value="nearest">Nearest Point</option>
                 <option value="boundary">Boundary Distance</option>
+                <option value="random_color">Random Color</option>
             </select>
         </div>
         <div class="flex flex-col justify-end">
@@ -70,6 +71,7 @@
         let w; // Cell size
         let active = []; // Active list of points
         let points = []; // Final accepted points in the tile
+        let pointColors = []; // Colors assigned to each point
         let cols, rows;
         
         // --- Tile and Display Variables ---
@@ -199,6 +201,7 @@
             grid = new Array(cols * rows).fill(undefined);
             active = [];
             points = [];
+            pointColors = [];
             
             // Step 1: Initial random sample
             let x = random(tileSize);
@@ -210,6 +213,7 @@
             grid[i + j * cols] = pos;
             active.push(pos);
             points.push(pos);
+            pointColors.push([random(256), random(256), random(256)]);
             
             while (active.length > 0) {
                 let randIndex = Math.floor(random(active.length));
@@ -257,6 +261,7 @@
                             grid[col + row * cols] = newPos;
                             active.push(newPos);
                             points.push(newPos);
+                            pointColors.push([random(256), random(256), random(256)]);
                             break;
                         }
                     }
@@ -314,6 +319,7 @@
                     let minDist2 = Infinity;
                     let closestPt1 = null;
                     let closestPt2 = null;
+                    let closestIndex1 = -1;
                     
                     // Map global canvas coordinates into the repeating 0-tileSize space
                     let wx = x % tileSize;
@@ -332,78 +338,92 @@
                              
                              minDist1 = d;
                              closestPt1 = pt;
+                             closestIndex1 = i;
                          } else if (d < minDist2) {
                              minDist2 = d;
                              closestPt2 = pt;
                          }
                     }
 
-                    let finalDist = 0;
-                    
-                    if (renderMode === 'nearest') {
-                        finalDist = minDist1;
-                    } else if (renderMode === 'boundary') {
-                        // Calculate distance to the boundary (bisector) between the two closest points.
-                        // We need to account for wrapping here. To find the true vector between them,
-                        // we calculate the shortest wrapped difference.
+                    if (renderMode === 'random_color') {
+                        let col = pointColors[closestIndex1];
+                        let rC = col[0];
+                        let gC = col[1];
+                        let bC = col[2];
                         
-                        let dx = closestPt2.x - closestPt1.x;
-                        let dy = closestPt2.y - closestPt1.y;
-
-                        // Adjust for wrapping to find the actual relative position of pt2 to pt1
-                        if (dx > tileSize / 2) dx -= tileSize;
-                        else if (dx < -tileSize / 2) dx += tileSize;
+                        if (invertColor) {
+                            rC = 255 - rC;
+                            gC = 255 - gC;
+                            bC = 255 - bC;
+                        }
                         
-                        if (dy > tileSize / 2) dy -= tileSize;
-                        else if (dy < -tileSize / 2) dy += tileSize;
-
-                        // Create a "virtual" un-wrapped position for closestPt2 relative to closestPt1
-                        let virtualPt2 = { x: closestPt1.x + dx, y: closestPt1.y + dy };
+                        let index = (x + y * canvasW) * 4;
+                        img.pixels[index] = rC;       // R
+                        img.pixels[index + 1] = gC;   // G
+                        img.pixels[index + 2] = bC;   // B
+                        img.pixels[index + 3] = 255;  // A
+                    } else {
+                        let finalDist = 0;
                         
-                        // Vector from pt1 to virtual pt2
-                        let v = createVector(virtualPt2.x - closestPt1.x, virtualPt2.y - closestPt1.y);
+                        if (renderMode === 'nearest') {
+                            finalDist = minDist1;
+                        } else if (renderMode === 'boundary') {
+                            if (closestPt2) {
+                                // 1. Find wrapped dx/dy between pt1 and pt2
+                                let dx = closestPt2.x - closestPt1.x;
+                                let dy = closestPt2.y - closestPt1.y;
+                                
+                                // Wrap dx, dy
+                                if (dx > tileSize / 2) dx -= tileSize;
+                                else if (dx < -tileSize / 2) dx += tileSize;
+                                
+                                if (dy > tileSize / 2) dy -= tileSize;
+                                else if (dy < -tileSize / 2) dy += tileSize;
+                                
+                                let virtualPt2 = { x: closestPt1.x + dx, y: closestPt1.y + dy };
+                                let mid = { x: (closestPt1.x + virtualPt2.x) / 2, y: (closestPt1.y + virtualPt2.y) / 2 };
+                                
+                                // 2. Find wrapped pdx/pdy between pt1 and current pixel
+                                let px = currentPixelPos.x;
+                                let py = currentPixelPos.y;
+                                
+                                let pdx = px - closestPt1.x;
+                                let pdy = py - closestPt1.y;
+                                
+                                if (pdx > tileSize / 2) pdx -= tileSize;
+                                else if (pdx < -tileSize / 2) pdx += tileSize;
+                                
+                                if (pdy > tileSize / 2) pdy -= tileSize;
+                                else if (pdy < -tileSize / 2) pdy += tileSize;
+                                
+                                let virtualP = { x: closestPt1.x + pdx, y: closestPt1.y + pdy };
+                                
+                                // 3. Vector math
+                                let pToMid = createVector(virtualP.x - mid.x, virtualP.y - mid.y);
+                                let v = createVector(dx, dy);
+                                v.normalize();
+                                
+                                finalDist = Math.abs(pToMid.dot(v));
+                            } else {
+                                finalDist = minDist1; // Fallback if no second point exists
+                            }
+                        }
                         
-                        // Midpoint between pt1 and virtual pt2
-                        let mid = createVector((closestPt1.x + virtualPt2.x) / 2, (closestPt1.y + virtualPt2.y) / 2);
+                        // Map distance to a color (greyscale)
+                        // Closer to 0 is black, further away is white
+                        let c = map(finalDist, 0, maxDist, 0, 255);
+                        c = constrain(c, 0, 255);
                         
-                        // Vector from midpoint to current pixel
-                        // We also need to unwrap the current pixel relative to pt1 just in case it crosses a boundary
-                        let px = currentPixelPos.x;
-                        let py = currentPixelPos.y;
+                        if (invertColor) {
+                            c = 255 - c;
+                        }
                         
-                        let pdx = px - closestPt1.x;
-                        let pdy = py - closestPt1.y;
-                        if (pdx > tileSize / 2) pdx -= tileSize;
-                        else if (pdx < -tileSize / 2) pdx += tileSize;
-                        if (pdy > tileSize / 2) pdy -= tileSize;
-                        else if (pdy < -tileSize / 2) pdy += tileSize;
-                        
-                        let virtualP = { x: closestPt1.x + pdx, y: closestPt1.y + pdy };
-                        let pToMid = createVector(virtualP.x - mid.x, virtualP.y - mid.y);
-
-                        // Normalize vector between points to use for projection
-                        v.normalize();
-                        
-                        // The distance to the boundary is the dot product of the vector from midpoint to pixel
-                        // with the normalized direction vector between the two points.
-                        // We take the absolute value as we want distance regardless of which side we are on.
-                        finalDist = Math.abs(pToMid.dot(v));
+                        let index = (x + y * canvasW) * 4;
+                        img.pixels[index] = c;       // R
+                        img.pixels[index + 1] = c;   // G
+                        img.pixels[index + 2] = c;   // B
+                        img.pixels[index + 3] = 255; // A
                     }
-                    
-                    // Map distance to a color (greyscale)
-                    // Closer to 0 is black, further away is white
-                    let c = map(finalDist, 0, maxDist, 0, 255);
-                    c = constrain(c, 0, 255);
-                    
-                    if (invertColor) {
-                        c = 255 - c;
-                    }
-                    
-                    let index = (x + y * canvasW) * 4;
-                    img.pixels[index] = c;       // R
-                    img.pixels[index + 1] = c;   // G
-                    img.pixels[index + 2] = c;   // B
-                    img.pixels[index + 3] = 255; // A
                 }
             }
             
