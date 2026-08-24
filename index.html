@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seamless Poisson-Disc Sampling Grid</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        canvas {
+            image-rendering: pixelated; 
+        }
+    </style>
+</head>
+<body class="m-0 p-0 bg-zinc-900 text-zinc-100 font-sans flex flex-col items-center justify-center min-h-screen">
+    <div class="text-center mb-6 mt-4">
+        <h1 class="text-3xl font-bold mb-2 text-white">Seamless Voronoi Generator</h1>
+        <p class="text-zinc-400 text-sm">Voronoi texture, generated using Poisson-Disc Sampling.</p>
+    </div>
+
+    <!-- Container for p5.js canvas -->
+    <div id="canvas-container" class="flex justify-center items-center w-full"></div>
+    
+    <div class="mt-6 flex gap-6 items-center justify-center flex-wrap bg-zinc-800 border border-zinc-700 shadow-lg py-4 px-8 rounded-lg max-w-[90vw]">
+        <div class="flex flex-col justify-end">
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-zinc-300 mt-5">
+                <input type="checkbox" id="grid-checkbox" class="w-4 h-4 accent-blue-500" checked>
+                Show 3x3 Grid
+            </label>
+        </div>
+        <div class="flex flex-col">
+            <label for="size-input" class="text-sm text-zinc-300 mb-1">Texture Size</label>
+            <input type="number" id="size-input" class="bg-zinc-700 text-white rounded p-1 border border-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 w-24" value="128" min="16" max="1024">
+        </div>
+        <div class="flex flex-col">
+            <label for="radius-slider" class="text-sm text-zinc-300 mb-1">Minimum Distance (r): <span id="r-val">16</span></label>
+            <input type="range" id="radius-slider" min="4" max="100" value="16" step="1" class="accent-blue-500">
+        </div>
+        <div class="flex flex-col">
+            <label for="seed-input" class="text-sm text-zinc-300 mb-1">Seed</label>
+            <input type="number" id="seed-input" class="bg-zinc-700 text-white rounded p-1 border border-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 w-24" value="12345">
+        </div>
+    </div>
+
+    <script>
+        // --- Poisson Disk Sampling Variables ---
+        let r = 16; // Minimum distance between points
+        let k = 30; // Limit of samples to choose before rejection
+        let grid = []; // Background grid for spatial lookup
+        let w; // Cell size
+        let active = []; // Active list of points
+        let points = []; // Final accepted points in the tile
+        let cols, rows;
+        
+        // --- Tile and Display Variables ---
+        let tileSize = 128; // The size of one individual tile
+        let gridCols = 3;  // Number of tiles horizontally
+        let gridRows = 3;  // Number of tiles vertically
+        
+        let canvasW = tileSize * gridCols; 
+        let canvasH = tileSize * gridRows; 
+        
+        let currentSeed = 12345;
+
+        // UI elements
+        let rSlider, rValDisplay, seedInput, gridCheckbox, sizeInput;
+        let canvas;
+
+        function setup() {
+            canvas = createCanvas(canvasW, canvasH);
+            canvas.parent('canvas-container');
+            canvas.class('block rounded-lg shadow-md');
+            
+            pixelDensity(1);
+            
+            // UI Hookups
+            rSlider = document.getElementById('radius-slider');
+            rValDisplay = document.getElementById('r-val');
+            seedInput = document.getElementById('seed-input');
+            gridCheckbox = document.getElementById('grid-checkbox');
+            sizeInput = document.getElementById('size-input');
+
+            rSlider.addEventListener('input', () => {
+                r = parseInt(rSlider.value);
+                rValDisplay.innerText = r;
+                initPoisson();
+            });
+
+            seedInput.addEventListener('change', () => {
+                currentSeed = parseInt(seedInput.value) || 0;
+                initPoisson();
+            });
+
+            gridCheckbox.addEventListener('change', updateCanvasConfig);
+            sizeInput.addEventListener('change', updateCanvasConfig);
+
+            // Initialize based on UI settings
+            updateCanvasConfig();
+        }
+
+        function updateCanvasConfig() {
+            tileSize = parseInt(sizeInput.value) || 128;
+            let mode = gridCheckbox.checked ? 3 : 1;
+            gridCols = mode;
+            gridRows = mode;
+            canvasW = tileSize * gridCols;
+            canvasH = tileSize * gridRows;
+            
+            resizeCanvas(canvasW, canvasH);
+            
+            // Smart scaling so small textures are visible, big textures don't overflow
+            let scaleFactor = tileSize <= 64 ? 4 : (tileSize <= 128 ? 2 : 1);
+            if (mode === 1) scaleFactor *= 2; // Make single tile even larger for viewing
+
+            canvas.style('width', `${canvasW * scaleFactor}px`);
+            canvas.style('height', `${canvasH * scaleFactor}px`);
+            canvas.style('max-width', '90vw');
+            canvas.style('max-height', '65vh');
+            canvas.style('object-fit', 'contain');
+
+            initPoisson();
+        }
+
+        function initPoisson() {
+            // Set random seed for determinism
+            randomSeed(currentSeed);
+
+            // Bridson's algorithm Step 0
+            
+            // Cell size is bounded by r / sqrt(n). For 2D, n=2.
+            w = r / Math.sqrt(2); 
+            
+            // Calculate grid dimensions based on ONE tile
+            cols = Math.floor(tileSize / w);
+            rows = Math.floor(tileSize / w);
+            
+            // Initialize arrays
+            grid = new Array(cols * rows).fill(undefined);
+            active = [];
+            points = [];
+            
+            // Step 1: Initial random sample
+            let x = random(tileSize);
+            let y = random(tileSize);
+            let i = Math.floor(x / w);
+            let j = Math.floor(y / w);
+            
+            let pos = createVector(x, y);
+            grid[i + j * cols] = pos;
+            active.push(pos);
+            points.push(pos);
+            
+            while (active.length > 0) {
+                let randIndex = Math.floor(random(active.length));
+                let currentPos = active[randIndex];
+                let found = false;
+                
+                for (let n = 0; n < k; n++) {
+                    let angle = random(TWO_PI);
+                    let sample = p5.Vector.fromAngle(angle);
+                    let m = random(r, 2 * r);
+                    sample.setMag(m);
+                    sample.add(currentPos);
+                    
+                    let sx = wrapCoord(sample.x, tileSize);
+                    let sy = wrapCoord(sample.y, tileSize);
+                    
+                    let col = Math.floor(sx / w);
+                    let row = Math.floor(sy / w);
+                    
+                    if (col >= 0 && row >= 0 && col < cols && row < rows) {
+                        let ok = true;
+                        for (let i = -1; i <= 1; i++) {
+                            for (let j = -1; j <= 1; j++) {
+                                let wrappedCol = wrapCoord(col + i, cols);
+                                let wrappedRow = wrapCoord(row + j, rows);
+                                
+                                let index = wrappedCol + wrappedRow * cols;
+                                let neighbor = grid[index];
+                                
+                                if (neighbor) {
+                                    let samplePos = createVector(sx, sy);
+                                    let d = periodicDist(samplePos, neighbor);
+                                    if (d < r) {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!ok) break;
+                        }
+                        
+                        if (ok) {
+                            found = true;
+                            let newPos = createVector(sx, sy);
+                            grid[col + row * cols] = newPos;
+                            active.push(newPos);
+                            points.push(newPos);
+                            break;
+                        }
+                    }
+                }
+                
+                if (!found) {
+                    active.splice(randIndex, 1);
+                }
+            }
+            
+            // Render directly after generation is done
+            renderDistanceField();
+        }
+
+        // Helper function for periodic wrapping
+        // Ensures that distances wrap around the tile boundaries
+        function periodicDist(p1, p2) {
+            let dx = Math.abs(p1.x - p2.x);
+            let dy = Math.abs(p1.y - p2.y);
+
+            // Wrap around X
+            if (dx > tileSize / 2) {
+                dx = tileSize - dx;
+            }
+            // Wrap around Y
+            if (dy > tileSize / 2) {
+                dy = tileSize - dy;
+            }
+
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        // Wrap coordinates so they stay within [0, tileSize)
+        function wrapCoord(val, maxVal) {
+             let wrapped = val % maxVal;
+             if (wrapped < 0) wrapped += maxVal;
+             return wrapped;
+        }
+
+        // Custom function to render the distance field
+        function renderDistanceField() {
+            // Determine sensible expected maximum distance to scale color
+            let maxDist = r * 1.5; 
+            
+            // Create a strictly 1:1 image buffer to prevent density scaling bugs on high-DPI screens
+            let img = createImage(canvasW, canvasH);
+            img.loadPixels();
+            
+            for (let y = 0; y < canvasH; y++) {
+                for (let x = 0; x < canvasW; x++) {
+                    let minDist = Infinity;
+                    
+                    // Map global canvas coordinates into the repeating 0-tileSize space
+                    let wx = x % tileSize;
+                    let wy = y % tileSize;
+                    
+                    let currentPixelPos = {x: wx, y: wy};
+                    
+                    // Find distance to closest point using the periodic distance function
+                    // This naturally handles checking "virtual" points wrapped around boundaries!
+                    for(let i = 0; i < points.length; i++){
+                         let pt = points[i];
+                         let d = periodicDist(currentPixelPos, pt);
+                         if(d < minDist){
+                             minDist = d;
+                         }
+                    }
+                    
+                    // Map distance to a color (greyscale)
+                    // Closer to 0 is black, further away is white
+                    let c = map(minDist, 0, maxDist, 0, 255);
+                    c = constrain(c, 0, 255);
+                    
+                    let index = (x + y * canvasW) * 4;
+                    img.pixels[index] = c;       // R
+                    img.pixels[index + 1] = c;   // G
+                    img.pixels[index + 2] = c;   // B
+                    img.pixels[index + 3] = 255; // A
+                }
+            }
+            
+            img.updatePixels();
+            // Draw the generated buffer to the canvas, automatically scaling for pixel density
+            image(img, 0, 0, width, height);
+
+            // Draw red gridlines for 3x3 layout to clearly demarcate the base tile
+            if (gridCols > 1) {
+                stroke(255, 0, 0, 100);
+                strokeWeight(1);
+                for (let x = tileSize; x < width; x += tileSize) {
+                    line(x, 0, x, height);
+                }
+                for (let y = tileSize; y < height; y += tileSize) {
+                    line(0, y, width, y);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
