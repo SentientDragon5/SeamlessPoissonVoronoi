@@ -41,6 +41,19 @@
             <label for="seed-input" class="text-sm text-zinc-300 mb-1">Seed</label>
             <input type="number" id="seed-input" class="bg-zinc-700 text-white rounded p-1 border border-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 w-24" value="12345">
         </div>
+        <div class="flex flex-col">
+            <label for="render-mode" class="text-sm text-zinc-300 mb-1">Render Mode</label>
+            <select id="render-mode" class="bg-zinc-700 text-white rounded p-1 border border-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500">
+                <option value="nearest">Nearest Point</option>
+                <option value="boundary">Boundary Distance</option>
+            </select>
+        </div>
+        <div class="flex flex-col justify-end">
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-zinc-300 mt-5">
+                <input type="checkbox" id="invert-checkbox" class="w-4 h-4 accent-blue-500">
+                Invert Color
+            </label>
+        </div>
         <div class="flex flex-col justify-end">
             <!-- Added Save Button -->
             <button id="save-btn" class="bg-blue-600 hover:bg-blue-500 transition-colors text-white font-bold py-1 px-4 rounded border border-blue-700 shadow focus:outline-none focus:ring-2 focus:ring-blue-400 mt-5">
@@ -68,9 +81,11 @@
         let canvasH = tileSize * gridRows; 
         
         let currentSeed = 12345;
+        let renderMode = 'nearest'; // 'nearest' or 'boundary'
+        let invertColor = false;
 
         // UI elements
-        let rSlider, rValDisplay, seedInput, gridCheckbox, sizeInput, saveBtn;
+        let rSlider, rValDisplay, seedInput, gridCheckbox, sizeInput, saveBtn, renderModeSelect, invertCheckbox;
         let canvas;
 
         function setup() {
@@ -87,6 +102,8 @@
             gridCheckbox = document.getElementById('grid-checkbox');
             sizeInput = document.getElementById('size-input');
             saveBtn = document.getElementById('save-btn');
+            renderModeSelect = document.getElementById('render-mode');
+            invertCheckbox = document.getElementById('invert-checkbox');
 
             rSlider.addEventListener('input', () => {
                 r = parseInt(rSlider.value);
@@ -97,6 +114,16 @@
             seedInput.addEventListener('change', () => {
                 currentSeed = parseInt(seedInput.value) || 0;
                 initPoisson();
+            });
+
+            renderModeSelect.addEventListener('change', () => {
+                renderMode = renderModeSelect.value;
+                renderDistanceField();
+            });
+
+            invertCheckbox.addEventListener('change', () => {
+                invertColor = invertCheckbox.checked;
+                renderDistanceField();
             });
 
             gridCheckbox.addEventListener('change', updateCanvasConfig);
@@ -273,6 +300,9 @@
         function renderDistanceField() {
             // Determine sensible expected maximum distance to scale color
             let maxDist = r * 1.5; 
+            if (renderMode === 'boundary') {
+                maxDist = r * 0.8; // Boundary distance needs a tighter scale for contrast
+            }
             
             // Create a strictly 1:1 image buffer to prevent density scaling bugs on high-DPI screens
             let img = createImage(canvasW, canvasH);
@@ -280,7 +310,10 @@
             
             for (let y = 0; y < canvasH; y++) {
                 for (let x = 0; x < canvasW; x++) {
-                    let minDist = Infinity;
+                    let minDist1 = Infinity;
+                    let minDist2 = Infinity;
+                    let closestPt1 = null;
+                    let closestPt2 = null;
                     
                     // Map global canvas coordinates into the repeating 0-tileSize space
                     let wx = x % tileSize;
@@ -288,20 +321,83 @@
                     
                     let currentPixelPos = {x: wx, y: wy};
                     
-                    // Find distance to closest point using the periodic distance function
-                    // This naturally handles checking "virtual" points wrapped around boundaries!
+                    // Find the two closest points using periodic distance
                     for(let i = 0; i < points.length; i++){
                          let pt = points[i];
                          let d = periodicDist(currentPixelPos, pt);
-                         if(d < minDist){
-                             minDist = d;
+                         
+                         if(d < minDist1){
+                             minDist2 = minDist1;
+                             closestPt2 = closestPt1;
+                             
+                             minDist1 = d;
+                             closestPt1 = pt;
+                         } else if (d < minDist2) {
+                             minDist2 = d;
+                             closestPt2 = pt;
                          }
+                    }
+
+                    let finalDist = 0;
+                    
+                    if (renderMode === 'nearest') {
+                        finalDist = minDist1;
+                    } else if (renderMode === 'boundary') {
+                        // Calculate distance to the boundary (bisector) between the two closest points.
+                        // We need to account for wrapping here. To find the true vector between them,
+                        // we calculate the shortest wrapped difference.
+                        
+                        let dx = closestPt2.x - closestPt1.x;
+                        let dy = closestPt2.y - closestPt1.y;
+
+                        // Adjust for wrapping to find the actual relative position of pt2 to pt1
+                        if (dx > tileSize / 2) dx -= tileSize;
+                        else if (dx < -tileSize / 2) dx += tileSize;
+                        
+                        if (dy > tileSize / 2) dy -= tileSize;
+                        else if (dy < -tileSize / 2) dy += tileSize;
+
+                        // Create a "virtual" un-wrapped position for closestPt2 relative to closestPt1
+                        let virtualPt2 = { x: closestPt1.x + dx, y: closestPt1.y + dy };
+                        
+                        // Vector from pt1 to virtual pt2
+                        let v = createVector(virtualPt2.x - closestPt1.x, virtualPt2.y - closestPt1.y);
+                        
+                        // Midpoint between pt1 and virtual pt2
+                        let mid = createVector((closestPt1.x + virtualPt2.x) / 2, (closestPt1.y + virtualPt2.y) / 2);
+                        
+                        // Vector from midpoint to current pixel
+                        // We also need to unwrap the current pixel relative to pt1 just in case it crosses a boundary
+                        let px = currentPixelPos.x;
+                        let py = currentPixelPos.y;
+                        
+                        let pdx = px - closestPt1.x;
+                        let pdy = py - closestPt1.y;
+                        if (pdx > tileSize / 2) pdx -= tileSize;
+                        else if (pdx < -tileSize / 2) pdx += tileSize;
+                        if (pdy > tileSize / 2) pdy -= tileSize;
+                        else if (pdy < -tileSize / 2) pdy += tileSize;
+                        
+                        let virtualP = { x: closestPt1.x + pdx, y: closestPt1.y + pdy };
+                        let pToMid = createVector(virtualP.x - mid.x, virtualP.y - mid.y);
+
+                        // Normalize vector between points to use for projection
+                        v.normalize();
+                        
+                        // The distance to the boundary is the dot product of the vector from midpoint to pixel
+                        // with the normalized direction vector between the two points.
+                        // We take the absolute value as we want distance regardless of which side we are on.
+                        finalDist = Math.abs(pToMid.dot(v));
                     }
                     
                     // Map distance to a color (greyscale)
                     // Closer to 0 is black, further away is white
-                    let c = map(minDist, 0, maxDist, 0, 255);
+                    let c = map(finalDist, 0, maxDist, 0, 255);
                     c = constrain(c, 0, 255);
+                    
+                    if (invertColor) {
+                        c = 255 - c;
+                    }
                     
                     let index = (x + y * canvasW) * 4;
                     img.pixels[index] = c;       // R
