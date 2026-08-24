@@ -41,6 +41,12 @@
             <label for="seed-input" class="text-sm text-zinc-300 mb-1">Seed</label>
             <input type="number" id="seed-input" class="bg-zinc-700 text-white rounded p-1 border border-zinc-600 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 w-24" value="12345">
         </div>
+        <div class="flex flex-col justify-end">
+            <!-- Added Save Button -->
+            <button id="save-btn" class="bg-blue-600 hover:bg-blue-500 transition-colors text-white font-bold py-1 px-4 rounded border border-blue-700 shadow focus:outline-none focus:ring-2 focus:ring-blue-400 mt-5">
+                Save Tile
+            </button>
+        </div>
     </div>
 
     <script>
@@ -64,7 +70,7 @@
         let currentSeed = 12345;
 
         // UI elements
-        let rSlider, rValDisplay, seedInput, gridCheckbox, sizeInput;
+        let rSlider, rValDisplay, seedInput, gridCheckbox, sizeInput, saveBtn;
         let canvas;
 
         function setup() {
@@ -80,6 +86,7 @@
             seedInput = document.getElementById('seed-input');
             gridCheckbox = document.getElementById('grid-checkbox');
             sizeInput = document.getElementById('size-input');
+            saveBtn = document.getElementById('save-btn');
 
             rSlider.addEventListener('input', () => {
                 r = parseInt(rSlider.value);
@@ -94,6 +101,32 @@
 
             gridCheckbox.addEventListener('change', updateCanvasConfig);
             sizeInput.addEventListener('change', updateCanvasConfig);
+
+            // Added Save logic: Temporarily update canvas, download, then revert
+            saveBtn.addEventListener('click', () => {
+                let wasChecked = gridCheckbox.checked;
+                
+                // 1. Force the canvas into single-tile mode
+                if (wasChecked) {
+                    gridCheckbox.checked = false;
+                    updateCanvasConfig();
+                }
+
+                // 2. We use setTimeout to yield to the browser's rendering engine 
+                // so the user can visually see the grid snap to 1x1 before downloading.
+                setTimeout(() => {
+                    // Save the single tile directly from the canvas
+                    saveCanvas(`voronoi_seamless_${tileSize}`, 'png');
+                    
+                    // 3. Restore the original grid layout if it was previously checked
+                    if (wasChecked) {
+                        setTimeout(() => {
+                            gridCheckbox.checked = true;
+                            updateCanvasConfig();
+                        }, 500); // 500ms delay so they can observe the isolated tile temporarily
+                    }
+                }, 50); 
+            });
 
             // Initialize based on UI settings
             updateCanvasConfig();
